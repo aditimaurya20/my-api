@@ -127,10 +127,17 @@ class SentimentRequest(BaseModel):
 
 POS_WORDS = {"love", "loved", "great", "good", "happy", "amazing", "awesome",
              "excellent", "wonderful", "fantastic", "best", "enjoy", "enjoyed",
-             "delighted", "excited", "joy", "perfect", "beautiful", "glad", "thrilled"}
+             "delighted", "excited", "joy", "perfect", "beautiful", "glad", "thrilled",
+             "proud", "pleased", "grateful", "cheerful", "celebrate", "celebrating",
+             "promotion", "win", "won", "fun", "smile", "laugh", "like", "liked", "nice", 
+             "brilliant", "superb", "yay", "hooray"}
 NEG_WORDS = {"sad", "terrible", "bad", "awful", "hate", "hated", "worst", "horrible",
              "unhappy", "cry", "crying", "depressed", "disappointed", "disappointing",
-             "miserable", "angry", "upset", "lonely", "heartbroken", "gloomy", "sorry"}
+             "miserable", "angry", "upset", "lonely", "heartbroken", "gloomy", "sorry",
+             "cried", "grief", "devastated", "frustrated", "frustrating", "annoyed", 
+             "annoying", "disgusting", "failed", "fail", "lost", "pain", "hurt", "tired", 
+             "scared", "afraid", "worried", "anxious", "poor", "boring", "rude", "broken", 
+             "ruined", "unfortunately", "nightmare"}
 NEGATIONS = {"not", "no", "never", "isn't", "wasn't", "don't", "didn't", "can't"}
 
 def rule_sentiment(sentence: str) -> str:
@@ -143,45 +150,44 @@ def rule_sentiment(sentence: str) -> str:
         score += val
     return "happy" if score > 0 else "sad" if score < 0 else "neutral"
 
+LAST_AI_ERROR = {"msg": ""}
+
 def llm_sentiments(sentences: List[str]) -> List[str]:
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sentences))
     prompt = (
-        "Classify the sentiment of each sentence as exactly one of: "
-        "happy, sad, neutral. Positive/joyful = happy, negative/unhappy = sad, "
-        "plain factual statements = neutral. Return one label per sentence, "
-        "in the same order.\n\n" + numbered
+        "Classify the sentiment of each sentence as exactly one of: happy, sad, neutral.\n"
+        "happy = joyful/positive, sad = negative/unhappy/upset/angry/disappointed, "
+        "neutral = plain factual statement.\n"
+        f"There are {len(sentences)} sentences. Reply ONLY with a JSON array of "
+        f"{len(sentences)} strings, in the same order, no explanation.\n\n" + numbered
     )
-    resp = requests.post(
-        "https://aipipe.org/openrouter/v1/chat/completions",
-        headers={"Authorization": f"Bearer {os.environ['AIPIPE_TOKEN']}"},
-        json={
-            "model": "google/gemini-2.0-flash-lite-001",
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "sentiments",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "sentiments": {
-                                "type": "array",
-                                "items": {"type": "string", "enum": ["happy", "sad", "neutral"]},
-                            }
-                        },
-                        "required": ["sentiments"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-        },
-        timeout=25,
-    )
-    labels = json.loads(resp.json()["choices"][0]["message"]["content"])["sentiments"]
-    if len(labels) != len(sentences) or any(l not in ("happy", "sad", "neutral") for l in labels):
-        raise ValueError("bad AI output")
-    return labels
+    attempts = [
+        ("https://aipipe.org/openai/v1/chat/completions", "gpt-4.1-nano"),
+        ("https://aipipe.org/openrouter/v1/chat/completions", "openai/gpt-4.1-nano"),
+    ]
+    for url, model in attempts:
+        try:
+            resp = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {os.environ['AIPIPE_TOKEN']}"},
+                json={"model": model, "temperature": 0,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=25,
+            )
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"]
+            labels = json.loads(re.search(r"\[.*\]", text, re.S).group(0))
+            labels = [str(l).strip().lower() for l in labels]
+            if len(labels) == len(sentences) and all(l in ("happy", "sad", "neutral") for l in labels):
+                return labels
+            LAST_AI_ERROR["msg"] = f"bad output: {text[:200]}"
+        except Exception as e:
+            LAST_AI_ERROR["msg"] = f"{url}: {repr(e)[:300]}"
+    raise ValueError("AI failed")
+
+@app.get("/sentiment-debug")
+def sentiment_debug():
+    return {"last_ai_error": LAST_AI_ERROR["msg"], "token_set": "AIPIPE_TOKEN" in os.environ}
 
 @app.post("/sentiment")
 def sentiment(req: SentimentRequest):
