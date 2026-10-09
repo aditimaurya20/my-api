@@ -99,3 +99,24 @@ def code_interpreter(req: CodeRequest):
         lines = fallback_lines(result["output"])
 
     return {"error": lines, "result": result["output"]}
+
+# ---------- Q10: Students API ----------
+import csv
+from typing import Optional
+from fastapi import Query
+
+def load_students():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q-fastapi.csv")
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return [
+            {"studentId": int(row["studentId"]), "class": row["class"].strip()}
+            for row in csv.DictReader(f)
+        ]
+
+STUDENTS = load_students()
+
+@app.get("/api")
+def get_students(class_: Optional[List[str]] = Query(None, alias="class")):
+    if not class_:
+        return {"students": STUDENTS}
+    return {"students": [s for s in STUDENTS if s["class"] in class_]}
