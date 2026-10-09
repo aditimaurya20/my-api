@@ -120,3 +120,73 @@ def get_students(class_: Optional[List[str]] = Query(None, alias="class")):
     if not class_:
         return {"students": STUDENTS}
     return {"students": [s for s in STUDENTS if s["class"] in class_]}
+
+# ---------- Q11: Batch Sentiment ----------
+class SentimentRequest(BaseModel):
+    sentences: List[str]
+
+POS_WORDS = {"love", "loved", "great", "good", "happy", "amazing", "awesome",
+             "excellent", "wonderful", "fantastic", "best", "enjoy", "enjoyed",
+             "delighted", "excited", "joy", "perfect", "beautiful", "glad", "thrilled"}
+NEG_WORDS = {"sad", "terrible", "bad", "awful", "hate", "hated", "worst", "horrible",
+             "unhappy", "cry", "crying", "depressed", "disappointed", "disappointing",
+             "miserable", "angry", "upset", "lonely", "heartbroken", "gloomy", "sorry"}
+NEGATIONS = {"not", "no", "never", "isn't", "wasn't", "don't", "didn't", "can't"}
+
+def rule_sentiment(sentence: str) -> str:
+    words = re.findall(r"[a-z']+", sentence.lower())
+    score = 0
+    for i, w in enumerate(words):
+        val = 1 if w in POS_WORDS else -1 if w in NEG_WORDS else 0
+        if val and i > 0 and words[i - 1] in NEGATIONS:
+            val = -val
+        score += val
+    return "happy" if score > 0 else "sad" if score < 0 else "neutral"
+
+def llm_sentiments(sentences: List[str]) -> List[str]:
+    numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sentences))
+    prompt = (
+        "Classify the sentiment of each sentence as exactly one of: "
+        "happy, sad, neutral. Positive/joyful = happy, negative/unhappy = sad, "
+        "plain factual statements = neutral. Return one label per sentence, "
+        "in the same order.\n\n" + numbered
+    )
+    resp = requests.post(
+        "https://aipipe.org/openrouter/v1/chat/completions",
+        headers={"Authorization": f"Bearer {os.environ['AIPIPE_TOKEN']}"},
+        json={
+            "model": "google/gemini-2.0-flash-lite-001",
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "sentiments",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "sentiments": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": ["happy", "sad", "neutral"]},
+                            }
+                        },
+                        "required": ["sentiments"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        },
+        timeout=25,
+    )
+    labels = json.loads(resp.json()["choices"][0]["message"]["content"])["sentiments"]
+    if len(labels) != len(sentences) or any(l not in ("happy", "sad", "neutral") for l in labels):
+        raise ValueError("bad AI output")
+    return labels
+
+@app.post("/sentiment")
+def sentiment(req: SentimentRequest):
+    try:
+        labels = llm_sentiments(req.sentences)
+    except Exception:
+        labels = [rule_sentiment(s) for s in req.sentences]
+    return {"results": [{"sentence": s, "sentiment": l} for s, l in zip(req.sentences, labels)]}
