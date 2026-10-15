@@ -196,3 +196,43 @@ def sentiment(req: SentimentRequest):
     except Exception:
         labels = [rule_sentiment(s) for s in req.sentences]
     return {"results": [{"sentence": s, "sentiment": l} for s, l in zip(req.sentences, labels)]}
+
+# ---------- Q6: 12-factor config precedence ----------
+from fastapi import Request
+
+CFG_DEFAULTS = {"port": "8000", "workers": "1", "debug": "false",
+                "log_level": "info", "api_key": "default-secret-000"}
+CFG_YAML = {"debug": "false", "log_level": "info", "api_key": "key-7uqand7lig"}
+CFG_DOTENV = {"APP_DEBUG": "false", "APP_LOG_LEVEL": "debug", "APP_API_KEY": "key-7kasp7clfa"}
+CFG_OSENV = {"APP_PORT": "8260", "APP_DEBUG": "false", "APP_API_KEY": "key-5dk0pi7xi6"}
+
+def _cfg_key(k):
+    k = k.strip()
+    if k.upper().startswith("APP_"):
+        k = k[4:]
+    k = k.lower()
+    return "workers" if k == "num_workers" else k
+
+def _cfg_coerce(k, v):
+    if k in ("port", "workers"):
+        try:
+            return int(str(v).strip())
+        except ValueError:
+            return v
+    if k == "debug":
+        return str(v).strip().lower() in ("true", "1", "yes", "on")
+    return str(v)
+
+@app.get("/effective-config")
+def effective_config(request: Request):
+    merged = {}
+    for layer in (CFG_DEFAULTS, CFG_YAML, CFG_DOTENV, CFG_OSENV):
+        for k, v in layer.items():
+            merged[_cfg_key(k)] = v
+    for item in request.query_params.getlist("set"):
+        if "=" in item:
+            k, v = item.split("=", 1)
+            merged[_cfg_key(k)] = v
+    out = {k: _cfg_coerce(k, v) for k, v in merged.items()}
+    out["api_key"] = "****"
+    return out
